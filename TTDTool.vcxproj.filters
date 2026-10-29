@@ -18,9 +18,6 @@
     <ClCompile Include="TTDTool.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="TTD_Memory.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="TTD.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -29,9 +26,6 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="TTD_Memory.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="TTD.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>

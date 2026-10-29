@@ -142,14 +142,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="TTDTool.cpp" />
-    <ClCompile Include="TTD_Memory.cpp" />
     <ClCompile Include="TTD.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="TTD_Memory.hpp" />
     <ClInclude Include="TTD.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
