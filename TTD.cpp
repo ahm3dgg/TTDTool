@@ -27,16 +27,16 @@ void TTD_Process::ReadMemory(
 	TTD_ProcessVirtualAddress VirtualAddress, 
 	void* Buffer, 
 	size_t BufferSize, 
-	bool UseThread = false, 
-	const IThreadView* Thread = nullptr)
+	bool UseThread, 
+	const IThreadView* Thread)
 {
 	if (UseThread)
 	{
-		Thread->QueryMemoryBuffer(VirtualAddress, BufferView{ Buffer, BufferSize });
+		Thread->QueryMemoryBuffer(static_cast<GuestAddress>(VirtualAddress), BufferView{ Buffer, BufferSize });
 	}
 	else
 	{
-		m_cursor->QueryMemoryBuffer(VirtualAddress, BufferView{ Buffer, BufferSize });
+		m_cursor->QueryMemoryBuffer(static_cast<GuestAddress>(VirtualAddress), BufferView{ Buffer, BufferSize });
 	}
 }
 
@@ -46,7 +46,7 @@ void TTD_Process::ReadString(TTD_ProcessVirtualAddress VirtualAddress, char* Buf
 
 	for (size_t i = 0; i + 1 < BufferCap; i++)
 	{
-		m_cursor->QueryMemoryBuffer(VirtualAddress + i, BufferView{ &Buffer[i], sizeof(char) });
+		m_cursor->QueryMemoryBuffer(static_cast<GuestAddress>(VirtualAddress + i), BufferView{ &Buffer[i], sizeof(char) });
 
 		if (Buffer[i] == '\x00')
 		{
@@ -70,7 +70,7 @@ TTD_MemoryModule TTD_Process::QueryModuleByName(const wchar_t* ModuleName)
 
 		if (!_wcsicmp(module_name, ModuleName))
 		{
-			return  { this, module.pName, module.Address, module.Size };
+			return  { this, module.pName, static_cast<TTD_ProcessVirtualAddress>(module.Address), module.Size };
 		}
 	}
 
@@ -83,7 +83,7 @@ void TTD_Process::WatchMemory(
 	size_t Size)
 {
 	m_cursor->AddMemoryWatchpoint(MemoryWatchpointData{
-		VirtualAddress,
+		static_cast<GuestAddress>(VirtualAddress),
 		Size,
 		DataAccessMask(MemoryWatchInterest)
 		});
@@ -99,11 +99,12 @@ void TTD_Process::HookInit()
 		reinterpret_cast<uintptr_t>(this));
 
 	m_cursor->SetEventMask(EventMask::MemoryWatchpoint);
+	m_hook_init = true;
 }
 
 bool TTD_Process::OnWatchpoint(const ICursorView::MemoryWatchpointResult& Result, const IThreadView* Thread)
 {
-	auto it = m_hooks.find(Result.Address);
+	auto it = m_hooks.find(static_cast<TTD_ProcessVirtualAddress>(Result.Address));
 
 	if (it != m_hooks.end())
 	{
@@ -122,6 +123,123 @@ void TTD_Process::Travel(const TTD::Replay::Position& Position)
 void TTD_Process::Continue()
 {
 	m_cursor->ReplayForward();
+}
+
+void TTD_Process::Reset()
+{
+	m_cursor->SetPosition(m_engine->GetFirstPosition());
+}
+
+void TTD_Process::IndexAllocations()
+{
+	m_cursor->SetPosition(m_engine->GetFirstPosition());
+
+	auto kernel32_module = QueryModuleByName(L"KERNELBASE.DLL");
+	auto ntdll_module = QueryModuleByName(L"NTDLL.DLL");
+
+	auto pVirtualAlloc = kernel32_module.GetProcAddress("VirtualAlloc");
+	auto pRtlAllocateHeap = ntdll_module.GetProcAddress("RtlAllocateHeap");
+
+	auto pVirtualAlloc_End = GetFunctionEnd(*this, pVirtualAlloc);
+	auto pRtlAllocateHeap_End = GetFunctionEnd(*this, pRtlAllocateHeap);
+	
+    m_func_start_end[pVirtualAlloc] = pVirtualAlloc_End;
+    m_func_end_start[pVirtualAlloc_End] = pVirtualAlloc;
+
+    m_func_start_end[pRtlAllocateHeap] = pRtlAllocateHeap_End;
+    m_func_end_start[pRtlAllocateHeap_End] = pRtlAllocateHeap;
+
+    InstallHook<uint32_t, uint32_t, uint32_t>(
+		pRtlAllocateHeap,
+		[=](HookContext& ctx, uint32_t HeapHandle, uint32_t Flags, uint32_t Size) {
+            auto thread = ctx.Thread();
+            auto thread_id = uint32_t(thread->GetThreadInfo().UniqueId);
+            auto proc = ctx.Process();
+			puts("RtlAllocateHeap Start.");
+
+            auto memalloc = MemoryAllocation{};
+            memalloc.start = thread->GetPosition();
+            memalloc.protection = MemoryProtection::ReadWrite;
+            memalloc.size = Size;
+            memalloc.source = pRtlAllocateHeap;
+
+			InsertCall(pRtlAllocateHeap, thread_id, memalloc);
+        }
+	);
+
+	InstallHook<uint32_t, uint32_t, uint32_t, uint32_t>(pVirtualAlloc,
+		[=](HookContext& ctx, uint32_t lpAddress, uint32_t dwSize,
+			uint32_t flAllocationType, uint32_t flProtect) {
+			auto thread = ctx.Thread();
+            auto thread_id = uint32_t(thread->GetThreadInfo().UniqueId);
+            auto proc = ctx.Process();
+
+			puts("VirtualAlloc Start.");
+
+            auto memalloc = MemoryAllocation{};
+            memalloc.start = thread->GetPosition();
+            memalloc.preferred_address = lpAddress;
+            memalloc.protection = MemoryProtection(flProtect);
+            memalloc.size = dwSize;
+            memalloc.source = pVirtualAlloc;
+
+			InsertCall(pVirtualAlloc, thread_id, memalloc);
+		});
+
+	InstallHook(pVirtualAlloc_End, [=](HookContext& ctx) {
+		auto thread = ctx.Thread();
+		auto pctx = thread->GetCrossPlatformContext();
+		auto regs = reinterpret_cast<X86_NT5_CONTEXT*>(&pctx);
+        auto thread_id = uint32_t(thread->GetThreadInfo().UniqueId);
+
+		puts("VirtualAlloc End.");
+		
+		auto routine = m_func_end_start[pVirtualAlloc_End];
+		auto memalloc = QueryLastCall<MemoryAllocation>(routine, thread_id);
+		memalloc.returned_address = regs->Eax;
+		memalloc.end = thread->GetPosition();
+	});
+
+	InstallHook(pRtlAllocateHeap_End, [=](HookContext& ctx) {
+		auto thread = ctx.Thread();
+		auto pctx = thread->GetCrossPlatformContext();
+		auto regs = reinterpret_cast<X86_NT5_CONTEXT*>(&pctx);
+        auto thread_id = uint32_t(thread->GetThreadInfo().UniqueId);
+
+		puts("RtlAllocateHeap End.");
+
+		auto routine = m_func_end_start[pRtlAllocateHeap_End];
+		auto memalloc = QueryLastCall<MemoryAllocation>(routine, thread_id);
+		memalloc.returned_address = regs->Eax;
+		memalloc.end = thread->GetPosition();
+    });
+
+	m_cursor->ReplayForward();
+}
+
+void TTD_Process::InsertCall(TTD_ProcessVirtualAddress Routine, uint32_t ThreadId, std::any Context)
+{
+    std::lock_guard lk(sync);
+    
+    CallContextId call_ctx { ThreadId, Routine };
+    m_calls[call_ctx].push_back(Context);
+}
+
+TTD_ProcessVirtualAddress 
+TTD_Process::GetFunctionStartFromEnd(TTD_ProcessVirtualAddress End)
+{
+    return m_func_end_start[End];
+}
+
+TTD_ProcessVirtualAddress 
+TTD_Process::GetFunctionEndFromStart(TTD_ProcessVirtualAddress Start)
+{
+    return m_func_start_end[Start];
+}
+
+uint16_t TTD_Process::MachineMode()
+{
+	return m_engine->GetSystemInfo().System.ProcessorArchitecture;
 }
 
 void TTD_MemoryModule::Index()
@@ -280,7 +398,7 @@ uint32_t HookContext::Arg(size_t i)
 	uint32_t value = 0;
 
 	m_process->ReadMemory(
-		m_thread->GetStackPointer() + 4 + i * 4,
+		static_cast<TTD_ProcessVirtualAddress>(m_thread->GetStackPointer() + 4 + i * 4),
 		&value, 
 		sizeof(value),
 		true,
@@ -288,4 +406,14 @@ uint32_t HookContext::Arg(size_t i)
 	);
 
 	return value;
+}
+
+const IThreadView* HookContext::Thread()
+{
+	return m_thread;
+}
+
+TTD_Process* HookContext::Process()
+{
+    return m_process;
 }

@@ -21,12 +21,21 @@
     <ClCompile Include="TTD.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="TTD_FunctionAnalysis.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="TTD.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TTD_FunctionAnalysis.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TTD_Types.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

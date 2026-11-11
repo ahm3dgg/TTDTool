@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="TTDTool.vcxproj" />
+  <Project Path="TTDTool.vcxproj" Id="f5c3946d-8e70-4b88-b16d-74204604e50f" />
 </Solution>
